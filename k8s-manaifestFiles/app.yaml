@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vproapp
+  labels:
+    app: vproapp
+spec:
+  selector:
+    matchLabels:
+      app: vproapp
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: vproapp
+    spec:
+      containers:
+        - image: bhaskar150/vproapp:v1
+          ports:
+            - name: appport
+              containerPort: 8080
+          name: vproapp
+      initContainers:
+        - name: initdb
+          image: busybox
+          command: ['sh','-c','until nslookup vprodb;do echo waiting for db; sleep 2; done;']
+        - name: initmemcache
+          image: busybox
+          command: ['sh','-c','until nslookup vprocache01;do echo waiting for memcache;sleep 2;done;']
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: appservice
+spec:
+  type: NodePort
+  selector:
+    app: vproapp
+  ports:
+    - port: 8080
+      targetPort: appport
+      nodePort: 30001

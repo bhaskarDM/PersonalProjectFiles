@@ -1,0 +1,123 @@
+pipeline{
+    agent any
+    environment{
+        NEXUS_VERSION="nexus3"
+        NEXUS_PROTOCOL="http"
+        NEXUS_URL="172.31.36.232:8081"
+        NEXUS_REPOSITORY="vpro-maven-release"
+        NEXUS_CREDENTIAL_ID="nexusUser"
+        ARTVERSION="${env.BUILD_ID}"
+        scannerHome=tool 'sonarqube scanner'
+        NEXUS_REPOGRP_ID="vpro-maven-grp"
+    }
+    stages{
+        stage('Fetch code'){
+            steps{
+              git branch:'paac', url: 'soucre code link'
+            }
+        }
+        stage('configuration'){
+            steps{
+                script{
+                    sh '''
+                    cat << EOT > src/main/resources/application.properties
+                    #JDBC Configutation for Database Connection
+                    jdbc.driverClassName=com.mysql.jdbc.Driver
+                    jdbc.url=jdbc:mysql://172.31.31.20:3306/accounts?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull
+                    jdbc.username=admin
+                    jdbc.password=admin123
+
+                    #Memcached Configuration For Active and StandBy Host
+                    #For Active Host
+                    memcached.active.host=172.31.31.20
+                    memcached.active.port=11211
+                    #For StandBy Host
+                    memcached.standBy.host=172.31.31.20
+                    memcached.standBy.port=11211
+
+                    #RabbitMq Configuration
+                    rabbitmq.address=172.31.31.20
+                    rabbitmq.port=5672
+                    rabbitmq.username=test
+                    rabbitmq.password=test
+                    EOT
+                    '''
+                }
+            }
+        }
+        stage('Build'){
+
+             steps{
+                sh 'mvn clean install -DskipTests'
+                //stash name: 'copy-war-file', includes: 'target/vprofile-v2.war'
+             }
+             post{
+                success{
+                    echo "Archiving Artifacts"
+                    archiveArtifacts artifacts: '**/target/*.war'
+                }
+             }
+        }
+
+        stage('unit test'){
+            steps{
+               sh 'mvn test'
+            }
+        }
+        stage('integration test'){
+            steps{
+                sh 'mvn verify -DskipUnitTests'
+            }
+        }
+        stage('code analysis using sonarqube'){
+             steps{
+                withSonarQubeEnv('sonarqube server'){
+                    sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
+                   -Dsonar.projectName=vprofile-repo \
+                   -Dsonar.projectVersion=1.0 \
+                   -Dsonar.sources=src/ \
+                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
+                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                   -Dsonar.jacoco.reportsPath=target/jacoco.exec'''
+                }
+                //configure quality gate rules properly for the build to pass
+                 timeout(time: 10, unit: 'MINUTES'){
+                     waitForQualityGate abortPipeline:true
+                 }
+              }
+        }
+        stage('publish to Nexus Repo'){
+            steps{
+                        nexusArtifactUploader(
+                                nexusVersion: NEXUS_VERSION,
+                                protocol: NEXUS_PROTOCOL,
+                                nexusUrl: NEXUS_URL,
+                                groupId: 'com.example',
+                                version: ARTVERSION,
+                                repository: NEXUS_REPOSITORY,
+                                credentialsId: NEXUS_CREDENTIAL_ID,
+                                artifacts: [
+                                        [artifactId: "${JOB_NAME}-${BUILD_ID}",
+                                         classifier: '',
+                                         file: 'target/vprofile-v2.war',
+                                         type: 'war']
+                                ]
+                        )
+                    
+
+                
+            }
+        }
+        stage('deploying to staging'){
+            steps{
+                deploy adapters: [tomcat8(credentialsId: 'tomcatcreds', path: '', url: 'http://172.31.28.46:8080')], contextPath: 'application', onFailure: true, war: 'target/*.war'
+            }
+        }
+
+        stage('smoke test'){
+            steps{
+                httpRequest responseHandle:'NONE', url:'http://172.31.28.46:8080/application', wrapAsMultipart: false
+            }
+        }
+    }
+}
